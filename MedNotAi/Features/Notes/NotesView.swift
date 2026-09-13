@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 struct NotesView: View {
     @Environment(\.modelContext) private var context
@@ -19,6 +20,9 @@ struct NotesView: View {
     /// приложение при первом же обращении, а идентификатор просто не найдётся.
     @State private var selectedNoteID: UUID?
     @State private var notePendingDeletion: Note?
+    @State private var showImporter = false
+    @State private var importError: String?
+    @State private var recordNote: Note?
 
     private var selectedNote: Note? {
         guard let selectedNoteID else { return nil }
@@ -64,6 +68,22 @@ struct NotesView: View {
         .sheet(item: $newNote, onDismiss: purgeAfterEditor) { note in
             NavigationStack { NoteEditorView(note: note, startsEditing: true) }
                 .macSheetSize()
+        }
+        .sheet(item: $recordNote, onDismiss: purgeAfterEditor) { note in
+            LectureRecorderView(note: note).macSheetSize(height: 640)
+        }
+        .fileImporter(isPresented: $showImporter,
+                      allowedContentTypes: LectureImport.allowedTypes,
+                      allowsMultipleSelection: true) { result in
+            Task { await importLecture(result) }
+        }
+        .alert("Не получилось импортировать", isPresented: Binding(
+            get: { importError != nil },
+            set: { if !$0 { importError = nil } }
+        )) {
+            Button("Понятно") { importError = nil }
+        } message: {
+            Text(importError ?? "")
         }
         .confirmationDialog(
             notePendingDeletion.map { "Удалить «\($0.displayTitle)»?" } ?? "Удалить конспект?",
@@ -160,8 +180,12 @@ struct NotesView: View {
         .searchable(text: $search, prompt: "Поиск по конспектам")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button(action: createNote) {
-                    Label("Новый", systemImage: "plus")
+                Menu {
+                    Button("Новый конспект", systemImage: "square.and.pencil", action: createNote)
+                    Button("Импорт PDF или слайдов", systemImage: "doc.badge.plus") { showImporter = true }
+                    Button("Записать лекцию", systemImage: "mic.fill", action: startRecording)
+                } label: {
+                    Label("Добавить", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
             }
@@ -251,6 +275,39 @@ struct NotesView: View {
         return groups.first { $0.id == gid }?.name
     }
 
+    private func startRecording() {
+        context.purgeBlankNotes(keeping: selectedNote)
+        let note = Note(title: "Голосовая лекция", subject: selectedSubject ?? "Общее",
+                        colorIndex: Int.random(in: 0..<8))
+        context.insert(note)
+        recordNote = note
+    }
+
+    private func importLecture(_ result: Result<[URL], Error>) async {
+        switch result {
+        case .failure(let error):
+            importError = error.localizedDescription
+        case .success(let urls):
+            do {
+                let imported = try await LectureImport.load(urls: urls)
+                context.purgeBlankNotes(keeping: selectedNote)
+                let note = Note(title: imported.title, body: imported.text,
+                                subject: selectedSubject ?? "Общее",
+                                colorIndex: Int.random(in: 0..<8))
+                note.sourceFileName = imported.sourceName
+                context.insert(note)
+                try? context.save()
+                if isWide {
+                    selectedNoteID = note.id
+                } else {
+                    newNote = note
+                }
+            } catch {
+                importError = error.localizedDescription
+            }
+        }
+    }
+
     private func createNote() {
         // Пустой конспект, оставшийся с прошлого раза, переиспользуем,
         // иначе список постепенно зарастает безымянными заготовками.
@@ -306,6 +363,12 @@ struct NoteRow: View {
                     }
                     if !note.flashcards.isEmpty {
                         TagChip(text: "\(note.flashcards.count)", color: Theme.primary, icon: "rectangle.on.rectangle.angled")
+                    }
+                    if !note.recordings.isEmpty {
+                        TagChip(text: "\(note.recordings.count)", color: Theme.accentCyan, icon: "mic.fill")
+                    }
+                    if !note.sourceFileName.isEmpty {
+                        TagChip(text: "PDF", color: Theme.warning, icon: "doc.fill")
                     }
                     Spacer()
                     Text(note.updatedAt.localizedRelative)

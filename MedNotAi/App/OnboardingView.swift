@@ -39,10 +39,6 @@ struct OnboardingView: View {
             VStack(spacing: 0) {
                 if page < slides.count {
                     slideStack
-                } else if page == slides.count {
-                    SignInView(isOnboardingStep: true) {
-                        withAnimation(.spring(duration: 0.35)) { page += 1 }
-                    }
                 } else {
                     ProfileSetupStep(onFinish: finish)
                 }
@@ -213,12 +209,11 @@ private struct ProfileSetupStep: View {
                     settings.course = course
                     settings.language = language
                     if loadSamples { SampleData.seed(context) }
-                    settings.startTrial()
                     onFinish()
                 }
                 .buttonStyle(BrandButtonStyle())
 
-                Text("Первая неделя — бесплатно, без привязки карты.")
+                Text("Все функции открыты бесплатно — подписка не нужна.")
                     .font(.caption)
                     .foregroundStyle(Theme.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .center)

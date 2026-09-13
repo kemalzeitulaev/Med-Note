@@ -19,6 +19,10 @@ enum Keychain {
         case authProfile = "auth.profile"
         /// Refresh-токен Google: обновляет доступ без повторного входа.
         case googleRefreshToken = "auth.google.refresh-token"
+        /// Устаревшая одноаккаунтная запись. После первого входа переносится в vault.
+        case emailCredentials = "auth.email.credentials"
+        /// 256-битный ключ AES-GCM для файла аккаунтов. Сами пароли здесь не лежат.
+        case accountsVaultKey = "auth.accounts.vault-key"
     }
 
     private static let service = Bundle.main.bundleIdentifier ?? "kemal.MedNotAi"
@@ -70,7 +74,7 @@ enum Keychain {
 
     /// Стирает все секреты — при выходе из аккаунта.
     nonisolated static func removeAll() {
-        for item in [Item.aiAPIKey, .appleUserID, .authProfile, .googleRefreshToken] {
+        for item in [Item.aiAPIKey, .appleUserID, .authProfile, .googleRefreshToken, .emailCredentials] {
             remove(item)
         }
     }

@@ -8,11 +8,11 @@ struct HomeView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.isWideLayout) private var isWide
     @Environment(\.storeRecoveryNotice) private var recoveryNotice
+    @Environment(\.isCloudSyncEnabled) private var isCloudSyncEnabled
 
     @Query(sort: \Note.updatedAt, order: .reverse) private var notes: [Note]
     @Query(sort: \StudyEvent.date) private var events: [StudyEvent]
 
-    @State private var showPaywall = false
     @State private var showGlossary = false
     @State private var showReview = false
     @State private var showExam = false
@@ -54,13 +54,12 @@ struct HomeView: View {
                     .accessibilityLabel("Профиль и настройки")
                 }
             }
-            .sheet(isPresented: $showPaywall) { PaywallView().macSheetSize(height: 700) }
-            .sheet(isPresented: $showGlossary) { GlossaryView().macSheetSize(width: 720, height: 640) }
-            .sheet(isPresented: $showReview) { ReviewView().macSheetSize(height: 620) }
-            .sheet(isPresented: $showExam) { ExamQuizView(cards: allCards).macSheetSize(height: 640) }
+            .sheet(isPresented: $showGlossary) { GlossaryView().padSheet(width: 720, height: 640) }
+            .sheet(isPresented: $showReview) { ReviewView().padSheet() }
+            .sheet(isPresented: $showExam) { ExamQuizView(cards: allCards).padSheet() }
             .sheet(item: $newNote, onDismiss: { context.purgeBlankNotes() }) { note in
                 NavigationStack { NoteEditorView(note: note, startsEditing: true) }
-                    .macSheetSize()
+                    .padSheet(width: 820, height: 820)
             }
         }
     }
@@ -70,6 +69,7 @@ struct HomeView: View {
     private var compactLayout: some View {
         VStack(spacing: 18) {
             if let notice = recoveryNotice { recoveryBanner(notice) }
+            if !isCloudSyncEnabled { syncBanner }
             header
             quickActions
             if dueCards > 0 { reviewCard }
@@ -77,7 +77,6 @@ struct HomeView: View {
             if let deadline = upcomingDeadline { deadlineCard(deadline) }
             todaySection
             recentNotesSection
-            if settings.tier.showsAds { AdBanner(onUpgrade: { showPaywall = true }) }
             Color.clear.frame(height: 8)
         }
         .padding(.horizontal, 18)
@@ -90,6 +89,7 @@ struct HomeView: View {
     private var wideLayout: some View {
         VStack(spacing: 18) {
             if let notice = recoveryNotice { recoveryBanner(notice) }
+            if !isCloudSyncEnabled { syncBanner }
             header
             quickActions
 
@@ -102,7 +102,6 @@ struct HomeView: View {
                 }
                 VStack(spacing: 18) {
                     recentNotesSection
-                    if settings.tier.showsAds { AdBanner(onUpgrade: { showPaywall = true }) }
                 }
             }
             Color.clear.frame(height: 8)
@@ -127,7 +126,6 @@ struct HomeView: View {
                             .foregroundStyle(Theme.textPrimary)
                     }
                     Spacer()
-                    statusBadge
                 }
 
                 HStack(spacing: 10) {
@@ -179,7 +177,7 @@ struct HomeView: View {
                         Text("Экзамен по карточкам")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(Theme.textPrimary)
-                        Text("Проверьте себя письменно — интервалы повторения не сдвинутся")
+                        Text("Тест с вариантами и разбором ошибки — интервалы повторения не сдвинутся")
                             .font(.caption)
                             .foregroundStyle(Theme.textSecondary)
                     }
@@ -191,6 +189,25 @@ struct HomeView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    private var syncBanner: some View {
+        GlassCard(padding: 14) {
+            HStack(alignment: .top, spacing: 11) {
+                Image(systemName: "icloud.slash")
+                    .foregroundStyle(Theme.warning)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Синхронизация выключена")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("Код iCloud уже в приложении, но личная команда Apple не выдаёт эту возможность. Пока конспекты остаются на устройстве. Чтобы синк заработал, нужна платная подписка Apple Developer.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+        }
     }
 
     /// База не открылась и была пересоздана — молчать об этом нельзя,
@@ -224,36 +241,11 @@ struct HomeView: View {
         }
     }
 
-    @ViewBuilder
-    private var statusBadge: some View {
-        switch settings.tier {
-        case .premium:
-            TagChip(text: "Premium", color: Theme.primary, icon: "crown.fill")
-        case .promo:
-            TagChip(text: settings.promoDaysLeft.map { "Промо · \($0) дн." } ?? "Промо-доступ",
-                    color: Theme.success, icon: "ticket.fill")
-        case .trial:
-            Button { showPaywall = true } label: {
-                // Истёкший триал раньше показывался как «Пробный · 0 дн.» —
-                // выглядело как действующий доступ, хотя функции уже закрыты.
-                TagChip(text: settings.trialDaysLeft > 0 ? "Пробный · \(settings.trialDaysLeft) дн." : "Пробный истёк",
-                        color: settings.trialDaysLeft > 0 ? Theme.warning : Theme.danger,
-                        icon: settings.trialDaysLeft > 0 ? "clock.fill" : "exclamationmark.circle.fill")
-            }
-            .buttonStyle(.plain)
-        case .free:
-            Button { showPaywall = true } label: {
-                TagChip(text: "Улучшить", color: Theme.accentPink, icon: "sparkles")
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
     // MARK: - Быстрые действия
 
     /// На iPhone — сетка 2×2, на широком экране все действия в один ряд.
     private var quickActions: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: isWide ? 4 : 2), spacing: 10) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: isWide ? 3 : 2), spacing: 10) {
             QuickActionCard(icon: "square.and.pencil", title: "Новый конспект",
                             colors: [Color(hex: 0x7C3AED), Color(hex: 0xA855F7)]) {
                 let note = Note(subject: "Общее", colorIndex: Int.random(in: 0..<8))
@@ -271,6 +263,13 @@ struct HomeView: View {
             QuickActionCard(icon: "character.book.closed.fill", title: "Глоссарий",
                             colors: [Color(hex: 0x0EA5E9), Color(hex: 0x6366F1)]) {
                 showGlossary = true
+            }
+            QuickActionCard(icon: "mic.fill", title: "Запись лекции",
+                            colors: [Color(hex: 0x14B8A6), Color(hex: 0x0EA5E9)]) {
+                let note = Note(title: "Голосовая лекция", subject: "Общее",
+                                colorIndex: Int.random(in: 0..<8))
+                context.insert(note)
+                newNote = note
             }
         }
     }
@@ -412,36 +411,5 @@ struct QuickActionCard: View {
             .shadow(color: colors[0].opacity(0.3), radius: 10, y: 5)
         }
         .buttonStyle(.plain)
-    }
-}
-
-/// Рекламный блок для бесплатного тарифа — часть модели монетизации.
-struct AdBanner: View {
-    let onUpgrade: () -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "megaphone.fill")
-                .font(.title3)
-                .foregroundStyle(Theme.textSecondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Реклама")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(Theme.textSecondary)
-                Text("Отключите рекламу и откройте все функции в Premium")
-                    .font(.caption)
-                    .foregroundStyle(Theme.textPrimary)
-            }
-            Spacer()
-            Button("$7/мес", action: onUpgrade)
-                .buttonStyle(SoftButtonStyle())
-        }
-        .padding(14)
-        .background(Theme.surfaceTint.opacity(0.7), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
-                .foregroundStyle(Theme.hairline)
-        )
     }
 }

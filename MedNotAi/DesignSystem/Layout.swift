@@ -54,6 +54,12 @@ extension View {
         #endif
     }
 
+    /// Широкий шит на iPad: иначе экзамен и повторение открываются узкой карточкой
+    /// по центру, как iPhone, и длинные ответы обрезаются.
+    func padSheet(width: CGFloat = 760, height: CGFloat = 780) -> some View {
+        modifier(PadSheetModifier(width: width, height: height))
+    }
+
     /// Ширина боковой колонки в сплит-вью.
     func listColumnWidth() -> some View {
         navigationSplitViewColumnWidth(
@@ -74,6 +80,30 @@ private struct LayoutWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+private struct PadSheetModifier: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    let width: CGFloat
+    let height: CGFloat
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.frame(minWidth: width, idealWidth: width, minHeight: height, idealHeight: height)
+        #elseif os(iOS)
+        if sizeClass == .regular {
+            content
+                .frame(minWidth: width, minHeight: height)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationSizing(.page)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
     }
 }
 

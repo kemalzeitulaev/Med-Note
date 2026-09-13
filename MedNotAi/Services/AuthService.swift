@@ -6,12 +6,13 @@ import SwiftUI
 // MARK: - Модель пользователя
 
 enum AuthProvider: String, Codable, Sendable {
-    case apple, google
+    case apple, google, email
 
     var title: String {
         switch self {
         case .apple: "Apple"
         case .google: "Google"
+        case .email: "Почта"
         }
     }
 }
@@ -40,6 +41,15 @@ enum AuthError: LocalizedError, Equatable {
     case tokenExchangeFailed(String)
     case identityMismatch
     case revoked
+    case appleUnavailable
+    case invalidEmail
+    case weakPassword
+    case wrongPassword
+    case accountExists
+    case accountLocked(until: Date)
+    case storeUnavailable
+    case iCloudUnavailable
+    case cloudUnreachable
 
     var errorDescription: String? {
         switch self {
@@ -55,18 +65,35 @@ enum AuthError: LocalizedError, Equatable {
             "Ответ провайдера не прошёл проверку подлинности. Вход отменён в целях безопасности."
         case .revoked:
             "Доступ к аккаунту отозван. Войдите заново."
+        case .appleUnavailable:
+            "Вход через Apple в этой сборке недоступен: у команды разработчика нет этой возможности. Войдите по почте."
+        case .invalidEmail:
+            "Введите настоящий адрес почты."
+        case .weakPassword:
+            "Пароль — не короче 8 символов, без пробелов, с буквой и цифрой. Не используйте саму почту."
+        case .wrongPassword:
+            "Неверная почта или пароль."
+        case .accountExists:
+            "Аккаунт с этой почтой уже есть. Войдите, а не создавайте заново."
+        case .accountLocked(let until):
+            "Слишком много неверных попыток. Попробуйте после \(until.localized(Date.FormatStyle(date: .omitted, time: .shortened)))."
+        case .storeUnavailable:
+            "Не удалось открыть базу аккаунтов. Перезапустите приложение и попробуйте ещё раз."
+        case .iCloudUnavailable:
+            "Чтобы войти с другого устройства, на нём должен быть включён iCloud (Настройки → [ваше имя] → iCloud)."
+        case .cloudUnreachable:
+            "Не удалось связаться с iCloud. Проверьте сеть и повторите вход."
         }
     }
 }
 
 // MARK: - Сервис
 
-/// Вход через Apple и Google.
+/// Вход через почту, Apple и Google.
 ///
-/// У приложения нет собственного сервера, поэтому вход решает две задачи:
-/// подтверждает личность и даёт стабильный идентификатор, к которому
-/// привязаны локальные данные. Синхронизации между устройствами он не даёт —
-/// для неё понадобился бы бэкенд.
+/// Почтовые аккаунты: пароль не сохраняется, только PBKDF2-хеш.
+/// Локальная копия лежит в зашифрованном сейфе, общая — в iCloud,
+/// чтобы войти с iPhone, iPad и Mac.
 ///
 /// Что сделано для безопасности:
 /// * одноразовый `nonce` в запросе к Apple и Google — перехваченный ответ
@@ -112,13 +139,59 @@ final class AuthService: NSObject {
         request.nonce = Self.sha256(nonce)
     }
 
+    func signInWithEmail(name: String, email: String, password: String) async {
+        await completeEmailAuth(name: name, email: email, password: password, creating: false)
+    }
+
+    func registerWithEmail(name: String, email: String, password: String) async {
+        await completeEmailAuth(name: name, email: email, password: password, creating: true)
+    }
+
+    private func completeEmailAuth(name: String, email: String, password: String, creating: Bool) async {
+        guard !isBusy else { return }
+        isBusy = true
+        lastError = nil
+        defer { isBusy = false }
+
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = trimmedName.isEmpty ? nil : trimmedName
+        let normalized = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard Self.isValidEmail(normalized) else {
+            lastError = AuthError.invalidEmail.localizedDescription
+            return
+        }
+
+        do {
+            let account = try await resolveEmailAccount(
+                creating: creating,
+                email: normalized,
+                password: password,
+                displayName: displayName
+            )
+            store(AuthProfile(
+                provider: .email,
+                subject: account.id.uuidString,
+                email: account.email,
+                fullName: displayName ?? account.displayName,
+                signedInAt: Date()
+            ))
+            Task { try? await AccountCloud.publish(account) }
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     func completeAppleSignIn(_ result: Result<ASAuthorization, Error>) {
         switch result {
         case .failure(let error):
-            if (error as? ASAuthorizationError)?.code == .canceled {
-                lastError = nil
+            if let apple = error as? ASAuthorizationError {
+                if apple.code == .canceled {
+                    lastError = nil
+                } else {
+                    lastError = AuthError.appleUnavailable.localizedDescription
+                }
             } else {
-                lastError = error.localizedDescription
+                lastError = AuthError.appleUnavailable.localizedDescription
             }
         case .success(let authorization):
             guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
@@ -203,6 +276,81 @@ final class AuthService: NSObject {
         Keychain.remove(.authProfile)
         Keychain.remove(.appleUserID)
         Keychain.remove(.googleRefreshToken)
+        // Базу аккаунтов и ключ шифрования не трогаем: выход закрывает сессию,
+        // а не удаляет учётную запись. Иначе повторный вход был бы невозможен.
+    }
+
+    /// Удаляет почтовый аккаунт из зашифрованной базы. Сессия тоже закрывается.
+    func deleteEmailAccount() async {
+        guard let email = profile?.email, profile?.provider == .email else {
+            signOut()
+            return
+        }
+        await AccountStore.shared.deleteAccount(email: email)
+        await AccountCloud.delete(email: email)
+        Keychain.remove(.emailCredentials)
+        signOut()
+    }
+
+    private func resolveEmailAccount(
+        creating: Bool,
+        email: String,
+        password: String,
+        displayName: String?
+    ) async throws -> StoredAccount {
+        if creating {
+            try AccountStore.validatePassword(password, email: email)
+            if await AccountStore.shared.hasAccount(email: email) {
+                throw AuthError.accountExists
+            }
+            if (try? await AccountCloud.fetch(email: email)) != nil {
+                throw AuthError.accountExists
+            }
+            return try await AccountStore.shared.register(
+                email: email,
+                displayName: displayName,
+                password: password
+            )
+        }
+
+        if await AccountStore.shared.hasAccount(email: email) {
+            return try await AccountStore.shared.authenticate(
+                email: email,
+                password: password,
+                displayName: displayName
+            )
+        }
+
+        if let legacy = Keychain.decode(EmailCredentials.self, from: .emailCredentials),
+           legacy.email == email {
+            let account = try await AccountStore.shared.importLegacyIfNeeded(legacy, password: password)
+            Keychain.remove(.emailCredentials)
+            return account
+        }
+
+        if let remote = try await AccountCloud.fetch(email: email) {
+            let computed = AccountStore.derive(
+                password: password,
+                salt: remote.salt,
+                iterations: remote.iterations
+            )
+            guard AccountStore.timingSafeEqual(computed, remote.passwordHash) else {
+                throw AuthError.wrongPassword
+            }
+            await AccountStore.shared.cacheRemote(remote)
+            return try await AccountStore.shared.authenticate(
+                email: email,
+                password: password,
+                displayName: displayName
+            )
+        }
+
+        _ = AccountStore.derive(
+            password: password,
+            salt: Data(repeating: 0xA5, count: 16),
+            iterations: AccountStore.pbkdf2Iterations
+        )
+        throw AuthError.wrongPassword
     }
 
     // MARK: - Внутреннее
@@ -214,6 +362,7 @@ final class AuthService: NSObject {
 
         // Подставляем имя в профиль приложения, если пользователь его ещё не заполнил.
         let settings = AppSettings.shared
+        settings.hasSkippedSignIn = false
         if settings.userName.trimmingCharacters(in: .whitespaces).isEmpty {
             settings.userName = profile.displayName
         }
@@ -229,6 +378,17 @@ final class AuthService: NSObject {
 
     nonisolated static func sha256(_ input: String) -> String {
         SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    nonisolated static func isValidEmail(_ value: String) -> Bool {
+        let parts = value.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return false }
+        let local = parts[0]
+        let domain = parts[1]
+        guard !local.isEmpty, domain.contains("."), !domain.hasPrefix("."), !domain.hasSuffix(".") else {
+            return false
+        }
+        return value.count <= 254 && !value.contains(" ")
     }
 }
 
@@ -399,6 +559,31 @@ enum GoogleOAuth {
             fullName: claims["name"] as? String,
             signedInAt: Date()
         )
+    }
+}
+
+// MARK: - Локальный пароль
+
+/// Устаревший формат: соль и SHA-256. Новые аккаунты пишутся в `AccountStore`.
+struct EmailCredentials: Codable, Equatable, Sendable {
+    var email: String
+    var salt: Data
+    var hash: Data
+
+    init(email: String, password: String) {
+        self.email = email
+        var bytes = [UInt8](repeating: 0, count: 16)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        self.salt = Data(bytes)
+        self.hash = Self.digest(password: password, salt: salt)
+    }
+
+    func matches(password: String) -> Bool {
+        AccountStore.timingSafeEqual(hash, Self.digest(password: password, salt: salt))
+    }
+
+    private static func digest(password: String, salt: Data) -> Data {
+        Data(SHA256.hash(data: salt + Data(password.utf8)))
     }
 }
 

@@ -65,11 +65,12 @@ enum MedicalTextRenderer {
     }
 }
 
-/// Отображает текст конспекта с лёгкой разметкой и подсказками по терминам.
+/// Отображает текст конспекта с заголовками как в Заметках и подсказками по терминам.
 struct MedicalTextView: View {
     let text: String
     var highlightTerms: Bool = true
     var onTermTap: (MedicalTerm) -> Void
+    var onChecklistToggle: ((Int) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -92,17 +93,24 @@ struct MedicalTextView: View {
         case heading(String, level: Int)
         case bullet(String)
         case numbered(String, index: String)
+        case checklist(String, checked: Bool, line: Int)
+        case quote(String)
         case paragraph(String)
         case spacer
     }
 
     private var blocks: [Block] {
-        text.components(separatedBy: .newlines).map { rawLine in
+        text.components(separatedBy: .newlines).enumerated().map { offset, rawLine in
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { return .spacer }
             if line.hasPrefix("### ") { return .heading(String(line.dropFirst(4)), level: 3) }
             if line.hasPrefix("## ") { return .heading(String(line.dropFirst(3)), level: 2) }
             if line.hasPrefix("# ") { return .heading(String(line.dropFirst(2)), level: 1) }
+            if line.hasPrefix("- [ ] ") { return .checklist(String(line.dropFirst(6)), checked: false, line: offset) }
+            if line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
+                return .checklist(String(line.dropFirst(6)), checked: true, line: offset)
+            }
+            if line.hasPrefix("> ") { return .quote(String(line.dropFirst(2))) }
             if line.hasPrefix("• ") { return .bullet(String(line.dropFirst(2))) }
             if line.hasPrefix("- ") { return .bullet(String(line.dropFirst(2))) }
             if line.hasPrefix("* ") && !line.hasPrefix("**") { return .bullet(String(line.dropFirst(2))) }
@@ -121,9 +129,44 @@ struct MedicalTextView: View {
 
         case .heading(let content, let level):
             Text(MedicalTextRenderer.attributed(content, highlightTerms: highlightTerms))
-                .font(level <= 1 ? .title3.bold() : (level == 2 ? .headline : .subheadline.bold()))
+                .font(headingFont(level))
                 .foregroundStyle(Theme.textPrimary)
-                .padding(.top, 6)
+                .padding(.top, level == 1 ? 14 : (level == 2 ? 12 : 8))
+                .padding(.bottom, 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .quote(let content):
+            HStack(alignment: .top, spacing: 10) {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Theme.primary)
+                    .frame(width: 3)
+                Text(MedicalTextRenderer.attributed(content, highlightTerms: highlightTerms))
+                    .font(.body)
+                    .italic()
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 2)
+
+        case .checklist(let content, let checked, let line):
+            Button {
+                onChecklistToggle?(line)
+            } label: {
+                HStack(alignment: .top, spacing: 9) {
+                    Image(systemName: checked ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(checked ? Theme.success : Theme.primary)
+                    Text(MedicalTextRenderer.attributed(content, highlightTerms: highlightTerms))
+                        .font(.body)
+                        .foregroundStyle(Theme.textPrimary)
+                        .strikethrough(checked)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .buttonStyle(.plain)
+            .opacity(checked ? 0.55 : 1)
+            .disabled(onChecklistToggle == nil)
 
         case .bullet(let content):
             HStack(alignment: .top, spacing: 9) {
@@ -155,6 +198,14 @@ struct MedicalTextView: View {
                 .font(.body)
                 .foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1: .largeTitle.bold()
+        case 2: .title2.bold()
+        default: .title3.weight(.semibold)
         }
     }
 }

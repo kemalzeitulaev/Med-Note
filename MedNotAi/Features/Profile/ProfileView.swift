@@ -6,23 +6,19 @@ struct ProfileView: View {
     @Environment(AIAssistant.self) private var assistant
     @Environment(\.colorScheme) private var scheme
     @Environment(\.modelContext) private var context
+    @Environment(\.isCloudSyncEnabled) private var isCloudSyncEnabled
 
     @Query private var notes: [Note]
     @Query private var events: [StudyEvent]
 
     @State private var auth = AuthService.shared
-    @State private var store = StoreService.shared
 
-    @State private var showPaywall = false
     @State private var showAISettings = false
     @State private var showGlossary = false
-    @State private var showPromoCode = false
-    @State private var showPromoStudio = false
     @State private var showSignIn = false
     @State private var showSignOutConfirmation = false
+    @State private var showDeleteAccountConfirmation = false
     @State private var showEraseConfirmation = false
-    /// Скрытый вход в генератор промокодов: семь нажатий на строку версии.
-    @State private var versionTaps = 0
 
     var body: some View {
         @Bindable var settings = settings
@@ -34,7 +30,7 @@ struct ProfileView: View {
                 VStack(spacing: 15) {
                     profileCard
                     accountCard
-                    subscriptionCard
+                    syncCard
                     statsCard
                     preferencesCard
                     remindersCard
@@ -51,11 +47,8 @@ struct ProfileView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .sheet(isPresented: $showPaywall) { PaywallView().macSheetSize(height: 700) }
         .sheet(isPresented: $showAISettings) { AISettingsView().macSheetSize(height: 520) }
         .sheet(isPresented: $showGlossary) { GlossaryView().macSheetSize(width: 720, height: 640) }
-        .sheet(isPresented: $showPromoCode) { PromoCodeView().macSheetSize(height: 560) }
-        .sheet(isPresented: $showPromoStudio) { PromoStudioView().macSheetSize(height: 640) }
         .sheet(isPresented: $showSignIn) {
             NavigationStack { SignInView() }.macSheetSize(height: 620)
         }
@@ -63,13 +56,21 @@ struct ProfileView: View {
             Button("Выйти", role: .destructive) { auth.signOut() }
             Button("Отмена", role: .cancel) {}
         } message: {
-            Text("Конспекты и настройки останутся на устройстве — выход отвязывает только аккаунт.")
+            Text("Вы вернётесь на экран входа. Конспекты останутся на устройстве, аккаунт из базы не удаляется.")
+        }
+        .confirmationDialog("Удалить аккаунт?", isPresented: $showDeleteAccountConfirmation, titleVisibility: .visible) {
+            Button("Удалить аккаунт", role: .destructive) {
+                Task { await auth.deleteEmailAccount() }
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Почта и хеш пароля будут стёрты из зашифрованной базы на этом устройстве. Конспекты останутся.")
         }
         .confirmationDialog("Удалить все данные?", isPresented: $showEraseConfirmation, titleVisibility: .visible) {
             Button("Удалить всё", role: .destructive) { eraseEverything() }
             Button("Отмена", role: .cancel) {}
         } message: {
-            Text("Конспекты, карточки, диалоги, группы и расписание будут удалены безвозвратно. Активированная подписка сохранится.")
+            Text("Конспекты, карточки, диалоги, группы и расписание будут удалены безвозвратно.")
         }
     }
 
@@ -80,12 +81,14 @@ struct ProfileView: View {
             if let profile = auth.profile {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 12) {
-                        Image(systemName: profile.provider == .apple ? "apple.logo" : "g.circle.fill")
+                        Image(systemName: accountIcon(profile.provider))
                             .font(.title2)
                             .foregroundStyle(Theme.textPrimary)
                             .frame(width: 32)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Вход через \(profile.provider.title)")
+                            Text(profile.provider == .email
+                                 ? "Почта · доступен на iPhone, iPad и Mac"
+                                 : "Вход через \(profile.provider.title)")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.textPrimary)
                             Text(profile.email ?? "Почта скрыта провайдером")
@@ -101,14 +104,39 @@ struct ProfileView: View {
                     Button("Выйти из аккаунта") { showSignOutConfirmation = true }
                         .font(.subheadline)
                         .foregroundStyle(Theme.danger)
+                    if profile.provider == .email {
+                        Button("Удалить аккаунт с устройства") { showDeleteAccountConfirmation = true }
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.danger)
+                    }
                 }
             } else {
                 VStack(alignment: .leading, spacing: 11) {
                     settingLabel("person.badge.shield.checkmark.fill", "Вход не выполнен",
-                                 "Войдите через Apple или Google, чтобы защитить доступ")
+                                 "Войдите по почте, чтобы привязать профиль к аккаунту на этом устройстве")
                     Button("Войти") { showSignIn = true }
                         .buttonStyle(SoftButtonStyle(expands: true))
                 }
+            }
+        }
+    }
+
+    private var syncCard: some View {
+        GlassCard {
+            HStack(spacing: 12) {
+                GradientIcon(systemName: "icloud", size: 42)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isCloudSyncEnabled ? "iCloud включён" : "Только это устройство")
+                        .font(.headline)
+                        .foregroundStyle(Theme.textPrimary)
+                    Text(isCloudSyncEnabled
+                         ? "Конспекты, фото, карточки, календарь, диалоги, голосовые лекции и группы синхронизируются через iCloud."
+                         : "Личная команда разработчика не даёт iCloud. Конспекты пока только на этом устройстве. После платной подписки Apple Developer синк включится сам.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
             }
         }
     }
@@ -182,8 +210,6 @@ struct ProfileView: View {
                 Divider().overlay(Theme.hairline).padding(.vertical, 12)
                 navRow("character.book.closed.fill", "Глоссарий",
                        pluralRu(MedicalGlossary.terms.count, "термин", "термина", "терминов")) { showGlossary = true }
-                Divider().overlay(Theme.hairline).padding(.vertical, 12)
-                navRow("ticket.fill", "Промокод", promoRowSubtitle) { showPromoCode = true }
             }
         }
     }
@@ -287,87 +313,6 @@ struct ProfileView: View {
         return parts.joined(separator: " · ")
     }
 
-    private var subscriptionCard: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 13) {
-                HStack {
-                    GradientIcon(systemName: subscriptionIcon, size: 42)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(settings.tier.title)
-                            .font(.headline)
-                            .foregroundStyle(Theme.textPrimary)
-                        Text(subscriptionSubtitle)
-                            .font(.caption)
-                            .foregroundStyle(Theme.textSecondary)
-                    }
-                    Spacer()
-                }
-
-                if settings.isTrialActive {
-                    VStack(alignment: .leading, spacing: 5) {
-                        BrandProgressBar(value: Double(AppSettings.trialLength - settings.trialDaysLeft) / Double(AppSettings.trialLength))
-                        Text("Осталось \(pluralRu(settings.trialDaysLeft, "день", "дня", "дней")) из \(AppSettings.trialLength)")
-                            .font(.caption2)
-                            .foregroundStyle(Theme.textSecondary)
-                    }
-                }
-
-                switch settings.tier {
-                case .premium:
-                    Button("Управлять подпиской") {
-                        Task { await store.manageSubscriptions() }
-                    }
-                    .buttonStyle(SoftButtonStyle(expands: true))
-                case .promo:
-                    Button("Всё открыто по промокоду") { showPromoCode = true }
-                        .buttonStyle(SoftButtonStyle(expands: true))
-                case .trial, .free:
-                    Button(upgradeTitle) { showPaywall = true }
-                        .buttonStyle(BrandButtonStyle())
-                }
-            }
-        }
-    }
-
-    /// Цену берём из App Store, а не из кода: она зависит от страны и валюты.
-    private var upgradeTitle: String {
-        guard let product = store.monthly ?? store.products.first else { return "Открыть Premium" }
-        return "Открыть Premium · \(product.localizedPeriodPrice)"
-    }
-
-    private var promoRowSubtitle: String {
-        guard settings.tier == .promo else { return "Активировать код бесплатного доступа" }
-        if let days = settings.promoDaysLeft {
-            return "Активен · осталось \(pluralRu(days, "день", "дня", "дней"))"
-        }
-        return "Активен бессрочно"
-    }
-
-    private var subscriptionSubtitle: String {
-        switch settings.tier {
-        case .premium:
-            if let expiry = store.expirationDate {
-                return "Продлится \(expiry.localized(Date.FormatStyle(date: .abbreviated, time: .omitted)))"
-            }
-            return "Полный доступ без рекламы"
-        case .promo:
-            return settings.promoDaysLeft.map { "По промокоду · осталось \(pluralRu($0, "день", "дня", "дней"))" }
-                ?? "По промокоду · бессрочно, без рекламы"
-        case .trial:
-            return settings.trialDaysLeft > 0 ? "Пробная неделя активна" : "Пробный период истёк"
-        case .free:
-            return "Базовые функции с рекламой"
-        }
-    }
-
-    private var subscriptionIcon: String {
-        switch settings.tier {
-        case .premium: "crown.fill"
-        case .promo: "ticket.fill"
-        case .trial, .free: "sparkles"
-        }
-    }
-
     private var statsCard: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 12) {
@@ -389,21 +334,21 @@ struct ProfileView: View {
                 Text("MedNoteAi")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
-                Text("Интеллектуальный ассистент для студентов-медиков: конспекты, ИИ-разбор материала, групповая работа и календарь учёбы.")
+                Text("Интеллектуальный ассистент для студентов-медиков: конспекты, ИИ-разбор материала, групповая работа и календарь учёбы. Данные синхронизируются через iCloud.")
                     .font(.caption)
                     .foregroundStyle(Theme.textSecondary)
                 Text("Версия 1.0 · Учебный материал, не является клинической рекомендацией.")
                     .font(.caption2)
                     .foregroundStyle(Theme.textSecondary.opacity(0.7))
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        versionTaps += 1
-                        if versionTaps >= 7 {
-                            versionTaps = 0
-                            showPromoStudio = true
-                        }
-                    }
             }
+        }
+    }
+
+    private func accountIcon(_ provider: AuthProvider) -> String {
+        switch provider {
+        case .apple: "apple.logo"
+        case .google: "g.circle.fill"
+        case .email: "envelope.fill"
         }
     }
 

@@ -28,44 +28,35 @@ enum AppTab: Hashable, CaseIterable {
 struct RootView: View {
     @Environment(\.modelContext) private var context
     @State private var settings = AppSettings.shared
+    @State private var auth = AuthService.shared
     @State private var selection: AppTab = RootView.initialTab
-    @State private var incomingPromo: String?
 
     @Query private var events: [StudyEvent]
 
     var body: some View {
         Group {
-            if settings.hasSeenOnboarding {
+            if !settings.hasSeenOnboarding {
+                OnboardingView()
+            } else if auth.isSignedIn || settings.hasSkippedSignIn {
                 mainTabs
             } else {
-                OnboardingView()
+                SignInView(allowsSkip: true)
             }
         }
         .environment(settings)
         .environment(AIAssistant.shared)
-        .environment(AuthService.shared)
+        .environment(auth)
         .environment(\.locale, Locale(identifier: settings.language.localeIdentifier))
         .tint(Theme.primary)
+        .animation(.spring(duration: 0.35), value: auth.isSignedIn || settings.hasSkippedSignIn)
         .task {
-            await StoreService.shared.load()
-            await AuthService.shared.refreshAppleCredentialState()
+            await auth.refreshAppleCredentialState()
         }
         // Расписание уведомлений пересобирается при любом изменении событий
         // и настроек: раньше переключатель «Напоминать заранее» только
         // сохранялся, но ничего не планировал.
         .task(id: reminderSignature) {
             await StudyReminders.shared.sync(with: events)
-        }
-        .onOpenURL { url in
-            if let code = QRCode.promoCode(from: url.absoluteString) {
-                incomingPromo = PromoCodeService.format(code)
-            }
-        }
-        .sheet(item: Binding(
-            get: { incomingPromo.map(IncomingPromo.init) },
-            set: { incomingPromo = $0?.code }
-        )) { payload in
-            PromoCodeView(initialCode: payload.code).macSheetSize(height: 560)
         }
     }
 
@@ -116,12 +107,7 @@ struct RootView: View {
     }
 }
 
-private struct IncomingPromo: Identifiable {
-    let code: String
-    var id: String { code }
-}
-
 #Preview {
     RootView()
-        .modelContainer(for: [Note.self, Flashcard.self, StudyEvent.self, ChatThread.self, ChatMessage.self, StudyGroup.self], inMemory: true)
+        .modelContainer(for: [Note.self, Flashcard.self, StudyEvent.self, ChatThread.self, ChatMessage.self, StudyGroup.self, LectureRecording.self], inMemory: true)
 }

@@ -15,7 +15,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				MedNotAi.entitlements,
 			);
 			target = 386B789D304A00B300F18790 /* MedNotAi */;
 		};
@@ -259,6 +258,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = MedNotAi/MedNotAi.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "MedNotAi/MedNotAi-macOS.entitlements";
 				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -271,7 +271,10 @@
 				INFOPLIST_FILE = MedNotAi/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = MedNoteAi;
 				INFOPLIST_KEY_GoogleClientID = "";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Камера нужна, чтобы считать QR-код с годовой подпиской.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Камера нужна, чтобы сфотографировать доску или слайд и добавить снимок в конспект.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Микрофон нужен, чтобы записать голосовую лекцию.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Доступ к фото нужен, чтобы добавить снимки слайдов и схем в конспект.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Распознавание речи нужно, чтобы расшифровать запись лекции в конспект.";
 				INFOPLIST_KEY_NSUserNotificationsUsageDescription = "Напоминания о лекциях, практике и дедлайнах.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -308,6 +311,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = MedNotAi/MedNotAi.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "MedNotAi/MedNotAi-macOS.entitlements";
 				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -320,7 +324,10 @@
 				INFOPLIST_FILE = MedNotAi/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = MedNoteAi;
 				INFOPLIST_KEY_GoogleClientID = "";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Камера нужна, чтобы считать QR-код с годовой подпиской.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Камера нужна, чтобы сфотографировать доску или слайд и добавить снимок в конспект.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Микрофон нужен, чтобы записать голосовую лекцию.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Доступ к фото нужен, чтобы добавить снимки слайдов и схем в конспект.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Распознавание речи нужно, чтобы расшифровать запись лекции в конспект.";
 				INFOPLIST_KEY_NSUserNotificationsUsageDescription = "Напоминания о лекциях, практике и дедлайнах.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;

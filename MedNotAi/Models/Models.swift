@@ -18,11 +18,19 @@ final class Note {
     var summary: String = ""
     /// Идентификатор учебной группы, если конспект общий.
     var groupID: UUID?
+    /// Имя файла, из которого конспект собран (PDF, слайды, фото).
+    var sourceFileName: String = ""
 
     /// Обратная связь объявлена явно: без неё SwiftData не знал, что карточка
     /// принадлежит конспекту, и удалённые карточки оставались в базе сиротами.
     @Relationship(deleteRule: .cascade, inverse: \Flashcard.note)
     var flashcards: [Flashcard] = []
+
+    @Relationship(deleteRule: .cascade, inverse: \LectureRecording.note)
+    var recordings: [LectureRecording] = []
+
+    @Relationship(deleteRule: .cascade, inverse: \NotePhoto.note)
+    var photos: [NotePhoto] = []
 
     init(title: String = "", body: String = "", subject: String = "Общее", colorIndex: Int = 0, groupID: UUID? = nil) {
         self.id = UUID()
@@ -55,6 +63,9 @@ final class Note {
             && body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && summary.isEmpty
             && flashcards.isEmpty
+            && recordings.isEmpty
+            && photos.isEmpty
+            && sourceFileName.isEmpty
     }
 }
 
@@ -82,6 +93,99 @@ extension ModelContext {
         for note in (try? fetch(descriptor)) ?? [] {
             note.groupID = nil
         }
+    }
+}
+
+// MARK: - Запись лекции
+
+@Model
+final class LectureRecording {
+    var id: UUID = UUID()
+    var createdAt: Date = Date()
+    var duration: TimeInterval = 0
+    var fileName: String = ""
+    var transcript: String = ""
+    /// Сегменты расшифровки с таймкодами: JSON, чтобы CloudKit не спотыкался о свой тип.
+    var transcriptSegmentsJSON: String = ""
+    /// Сам звук. Лежит в модели, чтобы CloudKit увёз его на iPad вместе с конспектом.
+    var audioData: Data = Data()
+    var note: Note?
+
+    init(fileName: String, duration: TimeInterval, transcript: String = "", audioData: Data = Data()) {
+        self.id = UUID()
+        self.fileName = fileName
+        self.duration = duration
+        self.transcript = transcript
+        self.audioData = audioData
+        self.createdAt = Date()
+    }
+
+    var segments: [TranscriptSegment] {
+        get {
+            guard let data = transcriptSegmentsJSON.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode([TranscriptSegment].self, from: data)
+            else { return [] }
+            return decoded
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue),
+               let text = String(data: data, encoding: .utf8) {
+                transcriptSegmentsJSON = text
+            }
+        }
+    }
+
+    /// Связный текст без таймкодов — так расшифровка выглядит как обычная речь.
+    var flowingTranscript: String {
+        let joined = segments
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if !joined.isEmpty { return joined }
+        return transcript
+    }
+
+    var displayDuration: String {
+        let total = Int(duration.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// Кусок расшифровки, привязанный ко времени записи.
+struct TranscriptSegment: Codable, Identifiable, Hashable {
+    var id: UUID
+    var text: String
+    var start: TimeInterval
+    var duration: TimeInterval
+
+    init(id: UUID = UUID(), text: String, start: TimeInterval, duration: TimeInterval) {
+        self.id = id
+        self.text = text
+        self.start = start
+        self.duration = duration
+    }
+
+    var timeLabel: String {
+        let total = max(0, Int(start.rounded(.down)))
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+// MARK: - Фото в конспекте
+
+@Model
+final class NotePhoto {
+    var id: UUID = UUID()
+    var createdAt: Date = Date()
+    var imageData: Data = Data()
+    var caption: String = ""
+    var note: Note?
+
+    init(imageData: Data, caption: String = "") {
+        self.id = UUID()
+        self.imageData = imageData
+        self.caption = caption
+        self.createdAt = Date()
     }
 }
 

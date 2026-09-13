@@ -18,15 +18,12 @@ struct MedNotAiApp: App {
         WindowGroup {
             rootView
                 .environment(\.storeRecoveryNotice, store.recoveryNotice)
+                .environment(\.isCloudSyncEnabled, store.isCloudSyncEnabled)
         }
         .modelContainer(store.container)
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
-            // Пока приложение было в фоне, мог истечь промокод или пробная неделя,
-            // а подписку могли отменить в системных настройках.
-            AppSettings.shared.refreshAccessState()
             Task {
-                await StoreService.shared.refreshEntitlements()
                 await AuthService.shared.refreshAppleCredentialState()
             }
         }
@@ -59,30 +56,43 @@ struct MedNotAiApp: App {
 struct PersistentStore {
     let container: ModelContainer
     let recoveryNotice: StoreRecoveryNotice?
+    /// Конспекты уходят в iCloud. Если контейнер не открылся — работаем только локально.
+    let isCloudSyncEnabled: Bool
 
     private static let schema = Schema([
         Note.self, Flashcard.self, StudyEvent.self,
-        ChatThread.self, ChatMessage.self, StudyGroup.self
+        ChatThread.self, ChatMessage.self, StudyGroup.self,
+        LectureRecording.self, NotePhoto.self
     ])
 
     static func make() -> PersistentStore {
-        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let cloud = ModelConfiguration(
+            schema: schema,
+            cloudKitDatabase: .private(AccountCloud.containerID)
+        )
+        if let container = try? ModelContainer(for: schema, configurations: [cloud]) {
+            return PersistentStore(container: container, recoveryNotice: nil, isCloudSyncEnabled: true)
+        }
 
-        if let container = try? ModelContainer(for: schema, configurations: [configuration]) {
-            return PersistentStore(container: container, recoveryNotice: nil)
+        let local = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        if let container = try? ModelContainer(for: schema, configurations: [local]) {
+            return PersistentStore(container: container, recoveryNotice: nil, isCloudSyncEnabled: false)
         }
 
         // Схема не сошлась. Уводим старый файл в сторону и пробуем начать заново.
-        let backup = archiveStore(at: configuration.url)
-        if let container = try? ModelContainer(for: schema, configurations: [configuration]) {
-            return PersistentStore(container: container, recoveryNotice: .init(backupURL: backup, isMemoryOnly: false))
+        let backup = archiveStore(at: local.url)
+        if let container = try? ModelContainer(for: schema, configurations: [cloud]) {
+            return PersistentStore(container: container, recoveryNotice: .init(backupURL: backup, isMemoryOnly: false), isCloudSyncEnabled: true)
+        }
+        if let container = try? ModelContainer(for: schema, configurations: [local]) {
+            return PersistentStore(container: container, recoveryNotice: .init(backupURL: backup, isMemoryOnly: false), isCloudSyncEnabled: false)
         }
 
         // Даже чистый файл не открылся — работаем в памяти, чтобы дать
         // пользователю добраться до настроек и выгрузить резервную копию.
         let fallback = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         if let container = try? ModelContainer(for: schema, configurations: [fallback]) {
-            return PersistentStore(container: container, recoveryNotice: .init(backupURL: backup, isMemoryOnly: true))
+            return PersistentStore(container: container, recoveryNotice: .init(backupURL: backup, isMemoryOnly: true), isCloudSyncEnabled: false)
         }
 
         // Недостижимо: контейнер в памяти не зависит ни от файловой системы,
@@ -138,10 +148,19 @@ private struct StoreRecoveryKey: EnvironmentKey {
     static let defaultValue: StoreRecoveryNotice? = nil
 }
 
+private struct CloudSyncKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     var storeRecoveryNotice: StoreRecoveryNotice? {
         get { self[StoreRecoveryKey.self] }
         set { self[StoreRecoveryKey.self] = newValue }
+    }
+
+    var isCloudSyncEnabled: Bool {
+        get { self[CloudSyncKey.self] }
+        set { self[CloudSyncKey.self] = newValue }
     }
 }
 

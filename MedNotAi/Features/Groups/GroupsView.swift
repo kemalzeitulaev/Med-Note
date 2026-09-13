@@ -4,7 +4,6 @@ import SwiftData
 struct GroupsView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.colorScheme) private var scheme
-    @Environment(AppSettings.self) private var settings
     @Environment(\.isWideLayout) private var isWide
 
     @Query(sort: \StudyGroup.createdAt, order: .reverse) private var groups: [StudyGroup]
@@ -12,7 +11,6 @@ struct GroupsView: View {
 
     @State private var showCreate = false
     @State private var showJoin = false
-    @State private var showPaywall = false
     @State private var groupPendingDeletion: StudyGroup?
 
     var body: some View {
@@ -79,7 +77,6 @@ struct GroupsView: View {
             }
             .sheet(isPresented: $showCreate) { GroupEditorView().macSheetSize(height: 460) }
             .sheet(isPresented: $showJoin) { JoinGroupView().macSheetSize(height: 400) }
-            .sheet(isPresented: $showPaywall) { PaywallView().macSheetSize(height: 700) }
             .confirmationDialog(
                 groupPendingDeletion.map { "Удалить группу «\($0.name)»?" } ?? "Удалить группу?",
                 isPresented: Binding(
@@ -116,7 +113,7 @@ struct GroupsView: View {
                     Text("Групповое конспектирование")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Theme.textPrimary)
-                    Text("Общая база конспектов курса вместо разрозненных тетрадей.")
+                    Text("Код приглашения работает через iCloud — однокурсник на другом устройстве сможет войти.")
                         .font(.caption)
                         .foregroundStyle(Theme.textSecondary)
                 }
@@ -164,12 +161,10 @@ struct GroupsView: View {
     }
 
     private func create() {
-        guard settings.hasFullAccess else { showPaywall = true; return }
         showCreate = true
     }
 
     private func join() {
-        guard settings.hasFullAccess else { showPaywall = true; return }
         showJoin = true
     }
 }
@@ -220,6 +215,7 @@ struct GroupDetailView: View {
 
     @State private var newNote: Note?
     @State private var showInvite = false
+    @State private var isRefreshing = false
 
     private var groupNotes: [Note] {
         allNotes.filter { $0.groupID == group.id }
@@ -239,7 +235,7 @@ struct GroupDetailView: View {
 
                     if groupNotes.isEmpty {
                         GlassCard {
-                            Text("В группе ещё нет общих конспектов. Создайте первый — он появится у всех участников.")
+                            Text("В группе ещё нет общих конспектов. Создайте первый — он появится у участников через iCloud.")
                                 .font(.subheadline)
                                 .foregroundStyle(Theme.textSecondary)
                         }
@@ -252,6 +248,15 @@ struct GroupDetailView: View {
                                 }
                                 .buttonStyle(.plain)
                             }
+                        }
+                    }
+
+                    if isRefreshing {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Обновляю из iCloud…")
+                                .font(.caption)
+                                .foregroundStyle(Theme.textSecondary)
                         }
                     }
 
@@ -279,6 +284,13 @@ struct GroupDetailView: View {
                 .macSheetSize()
         }
         .sheet(isPresented: $showInvite) { InviteSheet(group: group).macSheetSize(height: 420) }
+        .task { await refreshFromCloud() }
+    }
+
+    private func refreshFromCloud() async {
+        isRefreshing = true
+        defer { isRefreshing = false }
+        await GroupCloud.pull(into: context, group: group)
     }
 
     private var headerCard: some View {
@@ -358,7 +370,7 @@ struct InviteSheet: View {
                     .frame(maxWidth: .infinity)
                     .background(Theme.chipGradient, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-                Text("Отправьте код однокурсникам — они смогут войти в группу «\(group.name)» и работать над конспектами вместе.")
+                Text("Отправьте код однокурсникам — на их устройстве должен быть включён iCloud. Они войдут в группу «\(group.name)» и увидят общие конспекты.")
                     .font(.subheadline)
                     .foregroundStyle(Theme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -437,6 +449,7 @@ struct GroupEditorView: View {
                         )
                         context.insert(group)
                         try? context.save()
+                        Task { await GroupCloud.publish(group) }
                         dismiss()
                     }
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -457,6 +470,7 @@ struct JoinGroupView: View {
     @State private var code = ""
     @State private var message: String?
     @State private var joinedGroup: StudyGroup?
+    @State private var isJoining = false
 
     var body: some View {
         NavigationStack {
@@ -485,9 +499,17 @@ struct JoinGroupView: View {
                 }
 
                 if joinedGroup == nil {
-                    Button("Войти в группу", action: join)
-                        .buttonStyle(BrandButtonStyle())
-                        .disabled(PromoCodeService.normalize(code).count < 6)
+                    Button {
+                        Task { await join() }
+                    } label: {
+                        if isJoining {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Войти в группу")
+                        }
+                    }
+                    .buttonStyle(BrandButtonStyle())
+                    .disabled(normalizedInvite(code).count < 6 || isJoining)
                 } else {
                     Text("Группа появилась в списке — откройте её, чтобы работать с общими конспектами.")
                         .font(.subheadline)
@@ -509,19 +531,34 @@ struct JoinGroupView: View {
         }
     }
 
-    private func join() {
-        let target = code.trimmingCharacters(in: .whitespaces).uppercased()
-        guard let group = groups.first(where: { $0.inviteCode == target }) else {
-            message = "Группа с таким кодом не найдена. Проверьте код у того, кто вас пригласил."
+    private func normalizedInvite(_ raw: String) -> String {
+        raw.uppercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    private func join() async {
+        let target = normalizedInvite(code)
+        let me = settings.greetingName.capitalizedFirst
+        message = nil
+
+        if let group = groups.first(where: { $0.inviteCode == target }) {
+            if group.memberNames.contains(where: { $0.caseInsensitiveCompare(me) == .orderedSame }) {
+                message = "Вы уже состоите в этой группе."
+            } else {
+                group.memberNames.append(me)
+                try? context.save()
+                await GroupCloud.publish(group)
+            }
+            withAnimation(.spring(duration: 0.3)) { joinedGroup = group }
             return
         }
-        let me = settings.greetingName.capitalizedFirst
-        if group.memberNames.contains(me) {
-            message = "Вы уже состоите в этой группе."
-        } else {
-            group.memberNames.append(me)
-            try? context.save()
+
+        isJoining = true
+        defer { isJoining = false }
+        do {
+            let group = try await GroupCloud.join(code: target, myName: me, context: context)
+            withAnimation(.spring(duration: 0.3)) { joinedGroup = group }
+        } catch {
+            message = error.localizedDescription
         }
-        withAnimation(.spring(duration: 0.3)) { joinedGroup = group }
     }
 }
